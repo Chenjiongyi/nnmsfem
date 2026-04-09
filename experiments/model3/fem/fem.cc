@@ -3,15 +3,11 @@
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/utilities.h>
-
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
-
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
-
 #include <deal.II/grid/tria.h>
-
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
@@ -20,13 +16,10 @@
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/petsc_precondition.h>
 #include <deal.II/lac/vector.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-
 #include <boost/archive/binary_iarchive.hpp>
 #include <boost/archive/archive_exception.hpp>
-
 #include <chrono>
 #include <fstream>
 #include <iomanip>
@@ -37,7 +30,6 @@
 class DCProblem {
 public:
   DCProblem();
-
   void declare_parameters(const char *);
   void run();
 
@@ -55,14 +47,12 @@ private:
   std::vector<double> currents;
   std::vector<dealii::Point<3>> sites;
 
-  // std::vector<double> rho;
-
   dealii::Triangulation<3> triangulation;
   dealii::FE_Q<3> fe;
   dealii::DoFHandler<3> dof_handler;
 
   dealii::AffineConstraints<double> constraints;
-  dealii::PETScWrappers::MPI::SparseMatrix stiffness_matrix; // volume terms only
+  dealii::PETScWrappers::MPI::SparseMatrix stiffness_matrix;
   dealii::PETScWrappers::MPI::SparseMatrix system_matrix;
 
   dealii::PETScWrappers::MPI::Vector solution;
@@ -83,8 +73,6 @@ void DCProblem::declare_parameters(const char *fn) {
   prm.parse_input(fn);
 }
 
-// Helper: load triangulation from binary archive, falling back to no_header mode
-// if boost version mismatch causes an unsupported_version exception.
 static void load_tria(dealii::Triangulation<3> &tria, const std::string &path) {
   std::ifstream ifs(path);
   if (!ifs.good()) {
@@ -92,7 +80,6 @@ static void load_tria(dealii::Triangulation<3> &tria, const std::string &path) {
     abort();
   }
 
-  // First attempt: normal load (archive header present and versions match).
   try {
     boost::archive::binary_iarchive ia(ifs);
     tria.clear();
@@ -103,9 +90,6 @@ static void load_tria(dealii::Triangulation<3> &tria, const std::string &path) {
               << "), retrying with no_header flag." << std::endl;
   }
 
-  // Second attempt: skip the boost archive header (version check bypassed).
-  // Works when the file was written with a different boost version but the
-  // underlying data layout is still compatible.
   ifs.clear();
   ifs.seekg(0, std::ios::beg);
   {
@@ -117,15 +101,6 @@ static void load_tria(dealii::Triangulation<3> &tria, const std::string &path) {
 
 void DCProblem::make_grid() {
   load_tria(triangulation, prm.get("iprefix") + ".tria");
-
-  // std::ifstream ifs_rho(prm.get("iprefix") + ".rho");
-  // int nrhos;
-  // ifs_rho >> nrhos;
-  // for (int i = 0; i < nrhos; ++i) {
-  //   double r;
-  //   ifs_rho >> r;
-  //   rho.push_back(r);
-  // }
 
   std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
 }
@@ -158,9 +133,6 @@ void DCProblem::assemble_system() {
   dealii::FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
   std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-  // Assemble volume (stiffness) terms only.
-  // Boundary Robin terms depend on the current source positions and are
-  // added per Wenner configuration inside simulate_wenner_line().
   for (const auto &cell : dof_handler.active_cell_iterators()) {
     double sigma = 1.0 / cell->material_id();
 
@@ -213,7 +185,6 @@ void DCProblem::simulate_wenner_line() {
     throw std::runtime_error("wenner_current must be positive");
   }
 
-  // Prepare face quadrature (reused across all configurations).
   dealii::QGauss<2> face_quadrature_formula(fe.degree + 1);
   dealii::FEFaceValues<3> fe_face_values(fe, face_quadrature_formula,
                                          dealii::update_values | dealii::update_quadrature_points |
@@ -233,21 +204,14 @@ void DCProblem::simulate_wenner_line() {
     }
 
     for (double Ax = start_x; Ax + 3.0 * a <= end_x + 1e-10; Ax += a) {
-      // const dealii::Point<3> A(Ax, 0.0, 0.0);
-      // const dealii::Point<3> M(Ax + a, 0.0, 0.0);
-      // const dealii::Point<3> N(Ax + 2.0 * a, 0.0, 0.0);
-      // const dealii::Point<3> B(Ax + 3.0 * a, 0.0, 0.0);
-
       const dealii::Point<3> A(0.0, Ax, 0.0);
       const dealii::Point<3> M(0.0, Ax + a, 0.0);
       const dealii::Point<3> N(0.0, Ax + 2.0 * a, 0.0);
       const dealii::Point<3> B(0.0, Ax + 3.0 * a, 0.0);
 
-      // Current sources for this Wenner configuration: +I at A, -I at B.
       const std::vector<dealii::Point<3>> cfg_sources = {A, B};
       const std::vector<double>           cfg_currents = {current, -current};
 
-      // Build system_matrix = stiffness_matrix + boundary Robin terms for A and B.
       system_matrix.copy_from(stiffness_matrix);
 
       for (const auto &cell : dof_handler.active_cell_iterators()) {
@@ -280,7 +244,6 @@ void DCProblem::simulate_wenner_line() {
       }
       system_matrix.compress(dealii::VectorOperation::add);
 
-      // Build RHS: point sources at A (+I) and B (-I).
       system_rhs = 0;
       for (size_t i = 0; i < cfg_sources.size(); ++i) {
         dealii::Vector<double> tmp(dof_handler.n_dofs());
@@ -312,7 +275,6 @@ void DCProblem::simulate_wenner_line() {
 void DCProblem::output_results() const {
   dealii::Vector<double> rho(triangulation.n_active_cells());
   for (auto cell : triangulation.active_cell_iterators()) {
-    // rho[cell->active_cell_index()] = this->rho[cell->material_id()];
     rho[cell->active_cell_index()] = cell->material_id();
   }
 
@@ -366,7 +328,7 @@ int main(int argc, char **argv) {
   dealii::Utilities::MPI::MPI_InitFinalize init(argc, argv);
 
   if (argc < 2) {
-    std::cout << "Usage: dcfwd3d <parameter file>" << std::endl;
+    std::cout << "Usage: <parameter file>" << std::endl;
     return 0;
   }
 

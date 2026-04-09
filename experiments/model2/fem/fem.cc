@@ -1,15 +1,11 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
-
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
-
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
-
 #include <deal.II/grid/tria.h>
-
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
@@ -18,17 +14,14 @@
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/petsc_precondition.h>
 #include <deal.II/lac/vector.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-
 #include <fstream>
 #include <numeric>
 
 class DCProblem {
 public:
   DCProblem();
-
   void declare_parameters(const char *);
   void run();
 
@@ -44,8 +37,6 @@ private:
   std::vector<dealii::Point<3>> sources;
   std::vector<double> currents;
   std::vector<dealii::Point<3>> sites;
-
-  // std::vector<double> rho;
 
   dealii::Triangulation<3> triangulation;
   dealii::FE_Q<3> fe;
@@ -76,15 +67,6 @@ void DCProblem::make_grid() {
 
   triangulation.clear();
   triangulation.load(ia, 0);
-
-  // std::ifstream ifs_rho(prm.get("iprefix") + ".rho");
-  // int nrhos;
-  // ifs_rho >> nrhos;
-  // for (int i = 0; i < nrhos; ++i) {
-  //   double r;
-  //   ifs_rho >> r;
-  //   rho.push_back(r);
-  // }
 
   std::ifstream ifs_emd(prm.get("iprefix") + ".emd");
   
@@ -143,7 +125,6 @@ void DCProblem::assemble_system() {
   std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
   for (const auto &cell : dof_handler.active_cell_iterators()) {
-    // double sigma = 1.0 / rho[cell->material_id()];
     double sigma = 1.0 / cell->material_id();
 
     fe_values.reinit(cell);
@@ -158,23 +139,6 @@ void DCProblem::assemble_system() {
     }
     cell->get_dof_indices(local_dof_indices);
 
-    // std::ofstream cell_matrix_file("cell_matrix_ct.txt", std::ios::app);
-    // if (cell_matrix_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_file << std::endl;
-    //   }
-    //   cell_matrix_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd.txt for writing" << std::endl;
-    // }
-
     for (unsigned int f : cell->face_indices()) {
       auto face = cell->face(f);
       if (!face->at_boundary()) {
@@ -186,7 +150,6 @@ void DCProblem::assemble_system() {
         continue;
       }
 
-      // Process all sources for this boundary face
       for (size_t src_idx = 0; src_idx < sources.size(); ++src_idx) {
         dealii::Tensor<1, 3> r = face->center() - sources[src_idx];
         for (unsigned int q_index : fe_face_values.quadrature_point_indices()) {
@@ -202,29 +165,11 @@ void DCProblem::assemble_system() {
       }
     }
 
-    // std::ofstream cell_matrix_r_file("cell_matrix_ct_r.txt", std::ios::app);
-    // if (cell_matrix_r_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_r_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_r_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_r_file << std::endl;
-    //   }
-    //   cell_matrix_r_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd.txt for writing" << std::endl;
-    // }
-
     constraints.distribute_local_to_global(cell_matrix, local_dof_indices, system_matrix);
   }
 
   system_matrix.compress(dealii::VectorOperation::add);
 
-  // Create point source vector for multiple sources with different currents
   system_rhs = 0;
   for (size_t i = 0; i < sources.size(); ++i) {
     dealii::Vector<double> tmp_v(dof_handler.n_dofs());
@@ -248,7 +193,6 @@ void DCProblem::solve() {
 void DCProblem::output_results() const {
   dealii::Vector<double> rho(triangulation.n_active_cells());
   for (auto cell : triangulation.active_cell_iterators()) {
-    // rho[cell->active_cell_index()] = this->rho[cell->material_id()];
     rho[cell->active_cell_index()] = cell->material_id();
   }
 
@@ -302,7 +246,7 @@ int main(int argc, char **argv) {
   dealii::Utilities::MPI::MPI_InitFinalize init(argc, argv);
 
   if (argc < 2) {
-    std::cout << "Usage: dcfwd3d <parameter file>" << std::endl;
+    std::cout << "Usage: <parameter file>" << std::endl;
     return 0;
   }
 

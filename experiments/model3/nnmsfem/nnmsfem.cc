@@ -3,17 +3,13 @@
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/utilities.h>
-
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
-
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/mapping_q1.h>
-
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/grid_tools.h>
-
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
@@ -22,17 +18,14 @@
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/petsc_precondition.h>
 #include <deal.II/lac/vector.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-
 #include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <list>
 #include <map>
 #include <numeric>
-
 #include <onnxruntime_cxx_api.h>
 
 class BasisBoundaryFunction : public dealii::Function<3, double> {
@@ -58,7 +51,6 @@ private:
 class DCProblem {
 public:
   DCProblem();
-
   void declare_parameters(const char *);
   void run();
 
@@ -76,14 +68,12 @@ private:
   std::vector<double> currents;
   std::vector<dealii::Point<3>> sites;
 
-  // std::vector<double> rho;
-
   dealii::Triangulation<3> coarse_tria, tria;
   dealii::FE_Q<3> fe;
   dealii::DoFHandler<3> coarse_dof_handler;
 
   dealii::AffineConstraints<double> constraints;
-  dealii::PETScWrappers::MPI::SparseMatrix stiffness_matrix; // volume terms only, reused across Wenner configs
+  dealii::PETScWrappers::MPI::SparseMatrix stiffness_matrix;
   dealii::PETScWrappers::MPI::SparseMatrix system_matrix;
 
   dealii::PETScWrappers::MPI::Vector solution;
@@ -129,15 +119,6 @@ void DCProblem::make_grid() {
     coarse_tria.load(ia, 0);
   }
 
-  // std::ifstream ifs_rho(prm.get("iprefix") + ".rho");
-  // int nrhos;
-  // ifs_rho >> nrhos;
-  // for (int i = 0; i < nrhos; ++i) {
-  //   double r;
-  //   ifs_rho >> r;
-  //   rho.push_back(r);
-  // }
-
   std::cout << "Number of active cells: " << tria.n_active_cells() << std::endl;
 }
 
@@ -168,7 +149,6 @@ void DCProblem::assemble_system_ms() {
   
   const char *model_path = "model/model.onnx";
   Ort::Session session(env, model_path, session_options);
-  // std::cout << "ONNX models loaded!" << std::endl;
 
   dealii::QGauss<3> quadrature_formula(fe.degree + 1);
   dealii::FEValues<3> fe_values(fe, quadrature_formula,
@@ -191,7 +171,6 @@ void DCProblem::assemble_system_ms() {
     dealii::DoFHandler<3>::active_cell_iterator coarse_cell_dh =
         dealii::DoFHandler<3>::active_cell_iterator(*coarse_cell, &coarse_dof_handler);
 
-    // double sigma_coarse = 1.0 / rho[coarse_cell_dh->material_id()];
     double sigma_coarse = 1.0 / coarse_cell_dh->material_id();
 
     cell_matrix = 0.0;
@@ -264,7 +243,6 @@ void DCProblem::assemble_system_ms() {
 
       std::vector<float> input_rho;
       for (const auto &cell : local_dof_handler.active_cell_iterators()) {
-          // 对电阻率进行log10处理
           float resistivity = static_cast<float>(cell->material_id());
           input_rho.push_back(std::log10(resistivity));
       }
@@ -315,7 +293,7 @@ void DCProblem::assemble_system_ms() {
 
       auto end_time = std::chrono::high_resolution_clock::now();
       auto duration = std::chrono::duration<double>(end_time - start_time);
-      std::cout << "Else block execution time: " << std::fixed << std::setprecision(6)
+      std::cout << "Block execution time: " << std::fixed << std::setprecision(6)
           << duration.count() << " seconds" << std::endl;
 
       float* output_data = output_tensors[0].GetTensorMutableData<float>();
@@ -334,41 +312,6 @@ void DCProblem::assemble_system_ms() {
           }
           local_solution[i].compress(dealii::VectorOperation::insert);
       }
-
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //     std::vector<float> solution_values(output_size/fe.dofs_per_cell);
-      //     std::copy(output_data + i*125, output_data + (i+1)*125, solution_values.begin());
-      //     for (unsigned int j = 0; j < solution_values.size() && j < local_solution[i].size(); ++j) {
-      //         local_solution[i][j] = solution_values[j];
-      //     }
-      //     local_solution[i].compress(dealii::VectorOperation::insert);
-      // }
-
-      // dealii::DataOut<3> data_out;
-      // data_out.attach_dof_handler(local_dof_handler);
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   data_out.add_data_vector(local_solution[i], "u" + dealii::Utilities::int_to_string(i));
-      // }
-      // data_out.build_patches();
-      // std::ofstream output(prm.get("oprefix") + "-" + coarse_cell->id().to_string() + ".vtk");
-      // data_out.write_vtk(output);
-
-      // std::ofstream solution_file("solution.txt", std::ios::app);
-      // if (!solution_file.is_open()) {
-      //   std::cerr << "Failed to open solution.txt for writing" << std::endl;
-      // }
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   if (solution_file.is_open()) {
-      //     for (unsigned int j = 0; j < local_solution[i].size(); ++j) {
-      //       solution_file << local_solution[i][j] << (j < local_solution[i].size() - 1 ? "," : "");
-      //     }
-      //     solution_file << std::endl;
-      //   }
-      // }
-      // if (solution_file.is_open()) {
-      //   solution_file.close();
-      //   std::cout << "Saved all local solutions to solution.txt" << std::endl;
-      // }
 
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
         unsigned int material_id = cell->material_id();
@@ -395,23 +338,6 @@ void DCProblem::assemble_system_ms() {
       }
     }
 
-    // std::ofstream cell_matrix_file("cell_matrix_dcd_nn.txt", std::ios::app);
-    // if (cell_matrix_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_file << std::endl;
-    //   }
-    //   cell_matrix_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd.txt for writing" << std::endl;
-    // }
-
     for (unsigned int f : coarse_cell_dh->face_indices()) {
       auto face = coarse_cell_dh->face(f);
       if (!face->at_boundary()) {
@@ -422,12 +348,6 @@ void DCProblem::assemble_system_ms() {
       if (fe_face_values.get_normal_vectors()[0][2] < 0) {
         continue;
       }
-
-      // NOTE: boundary Robin terms depend on the current Wenner electrode
-      // positions (A and B), which change for every configuration.  They are
-      // therefore NOT assembled here; instead they are added per-configuration
-      // inside simulate_wenner_line() after copying stiffness_matrix into
-      // system_matrix.
     }
 
     std::vector<dealii::types::global_dof_index> dof_indices(fe.dofs_per_cell);
@@ -437,8 +357,6 @@ void DCProblem::assemble_system_ms() {
   }
 
   stiffness_matrix.compress(dealii::VectorOperation::add);
-  // The right-hand side and full system_matrix (stiffness + Robin BC) are
-  // built later for each Wenner configuration.
   system_rhs = 0;
 }
 
@@ -473,7 +391,6 @@ void DCProblem::simulate_wenner_line() {
     throw std::runtime_error("wenner_current must be positive");
   }
 
-  // Prepare face quadrature (reused across all configurations).
   dealii::QGauss<2> face_quadrature_formula(fe.degree + 1);
   dealii::FEFaceValues<3> fe_face_values(fe, face_quadrature_formula,
                                          dealii::update_values | dealii::update_quadrature_points |
@@ -492,20 +409,13 @@ void DCProblem::simulate_wenner_line() {
     }
 
     for (double Ax = start_x; Ax + 3.0 * a <= end_x + 1e-10; Ax += a) {
-      // const dealii::Point<3> A(Ax, 0.0, 0.0);
-      // const dealii::Point<3> M(Ax + a, 0.0, 0.0);
-      // const dealii::Point<3> N(Ax + 2.0 * a, 0.0, 0.0);
-      // const dealii::Point<3> B(Ax + 3.0 * a, 0.0, 0.0);
-
       const dealii::Point<3> A(0.0, Ax, 0.0);
       const dealii::Point<3> M(0.0, Ax + a, 0.0);
       const dealii::Point<3> N(0.0, Ax + 2.0 * a, 0.0);
       const dealii::Point<3> B(0.0, Ax + 3.0 * a, 0.0);
 
-      // Current sources for this Wenner configuration: +I at A, -I at B.
       const std::vector<dealii::Point<3>> cfg_sources = {A, B};
 
-      // Rebuild system_matrix = stiffness_matrix + boundary Robin terms for A and B.
       system_matrix.copy_from(stiffness_matrix);
 
       for (const auto &coarse_cell_dh : coarse_dof_handler.active_cell_iterators()) {
@@ -538,7 +448,6 @@ void DCProblem::simulate_wenner_line() {
       }
       system_matrix.compress(dealii::VectorOperation::add);
 
-      // Build RHS: point sources at A (+I) and B (-I).
       system_rhs = 0;
 
       dealii::Vector<double> tmp_A(coarse_dof_handler.n_dofs());
@@ -576,7 +485,6 @@ void DCProblem::simulate_wenner_line() {
 void DCProblem::output_results() const {
   dealii::Vector<double> rho(tria.n_active_cells());
   for (auto cell : tria.active_cell_iterators()) {
-    // rho[cell->active_cell_index()] = this->rho[cell->material_id()];
     rho[cell->active_cell_index()] = cell->material_id();
   }
 
@@ -629,7 +537,7 @@ int main(int argc, char **argv) {
   dealii::Utilities::MPI::MPI_InitFinalize init(argc, argv, 1);
 
   if (argc < 2) {
-    std::cout << "Usage: dcfwd3d <parameter file>" << std::endl;
+    std::cout << "Usage: <parameter file>" << std::endl;
     return 0;
   }
 

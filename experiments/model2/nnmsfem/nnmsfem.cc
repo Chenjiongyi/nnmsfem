@@ -1,17 +1,13 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
-
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
-
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/mapping_q1.h>
-
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/grid_tools.h>
-
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
@@ -20,78 +16,15 @@
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/petsc_precondition.h>
 #include <deal.II/lac/vector.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-
 #include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <list>
 #include <map>
 #include <numeric>
-
 #include <onnxruntime_cxx_api.h>
-
-// FP16 conversion helpers
-inline uint16_t float_to_fp16(float value) {
-    // Simple FP32 to FP16 conversion (IEEE 754)
-    uint32_t f32;
-    std::memcpy(&f32, &value, sizeof(float));
-    uint32_t sign = (f32 >> 16) & 0x8000;
-    int32_t exponent = ((f32 >> 23) & 0xff) - 127;
-    uint32_t mantissa = f32 & 0x7fffff;
-    
-    if (exponent == 128) {
-        // Inf or NaN
-        return sign | 0x7c00 | (mantissa ? 0x0200 : 0);
-    }
-    if (exponent > 15) {
-        // Overflow to infinity
-        return sign | 0x7c00;
-    }
-    if (exponent < -14) {
-        // Underflow to zero or denormal
-        if (exponent < -24) return sign;
-        mantissa |= 0x800000;
-        return sign | (mantissa >> (14 - exponent + 10));
-    }
-    // Normal number
-    return sign | ((exponent + 15) << 10) | (mantissa >> 13);
-}
-
-inline float fp16_to_float(uint16_t value) {
-    uint32_t sign = (value & 0x8000) << 16;
-    uint32_t exponent = (value & 0x7c00) >> 10;
-    uint32_t mantissa = value & 0x03ff;
-    
-    if (exponent == 0) {
-        if (mantissa == 0) {
-            uint32_t result = sign;
-            float ret;
-            std::memcpy(&ret, &result, sizeof(float));
-            return ret;
-        }
-        // Denormal
-        exponent = 1;
-        while (!(mantissa & 0x0400)) {
-            mantissa <<= 1;
-            exponent--;
-        }
-        mantissa &= 0x03ff;
-    } else if (exponent == 31) {
-        // Inf or NaN
-        uint32_t result = sign | 0x7f800000 | (mantissa << 13);
-        float ret;
-        std::memcpy(&ret, &result, sizeof(float));
-        return ret;
-    }
-    
-    uint32_t result = sign | ((exponent + 112) << 23) | (mantissa << 13);
-    float ret;
-    std::memcpy(&ret, &result, sizeof(float));
-    return ret;
-}
 
 class BasisBoundaryFunction : public dealii::Function<3, double> {
 public:
@@ -116,7 +49,6 @@ private:
 class DCProblem {
 public:
   DCProblem();
-
   void declare_parameters(const char *);
   void run();
 
@@ -133,8 +65,6 @@ private:
   std::vector<double> currents;
   std::vector<dealii::Point<3>> sites;
 
-  // std::vector<double> rho;
-
   dealii::Triangulation<3> coarse_tria, tria;
   dealii::FE_Q<3> fe;
   dealii::DoFHandler<3> coarse_dof_handler;
@@ -145,97 +75,59 @@ private:
   dealii::PETScWrappers::MPI::Vector solution;
   dealii::PETScWrappers::MPI::Vector system_rhs;
 
-  // ONNX Runtime members
   std::unique_ptr<Ort::Env> ort_env;
   std::unique_ptr<Ort::Session> ort_session;
   std::unique_ptr<Ort::SessionOptions> ort_session_options;
   Ort::MemoryInfo memory_info;
   
-  // Pre-allocated buffers for reuse (FP32 staging buffers)
   std::vector<float> input_rho_buffer;
   std::vector<float> input_x_buffer;
   std::vector<float> input_y_buffer;
   std::vector<float> input_z_buffer;
-  std::vector<float> output_buffer;
   
-  // FP16 buffers for model input/output
-  std::vector<uint16_t> input_rho_fp16;
-  std::vector<uint16_t> input_x_fp16;
-  std::vector<uint16_t> input_y_fp16;
-  std::vector<uint16_t> input_z_fp16;
-  std::vector<uint16_t> output_fp16;
-  
-  // Pre-allocated shape vectors
   std::vector<int64_t> input_shape;
   std::vector<int64_t> coord_shape;
-  std::vector<int64_t> output_shape;
-  
-  // IO Binding for faster inference
-  std::unique_ptr<Ort::IoBinding> io_binding;
 };
 
 DCProblem::DCProblem() : fe(1), coarse_dof_handler(coarse_tria),
                          memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {
-  // Initialize ONNX Runtime
   ort_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "DCProblem");
   
   ort_session_options = std::make_unique<Ort::SessionOptions>();
-  // Use all available CPU threads for better performance
-  ort_session_options->SetIntraOpNumThreads(0);  // 0 = use default (all cores)
+  ort_session_options->SetIntraOpNumThreads(0);
   ort_session_options->SetInterOpNumThreads(0);
   
-  // Enable more aggressive optimizations
   ort_session_options->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   
-  // Enable memory pattern optimization
   ort_session_options->EnableMemPattern();
   ort_session_options->EnableCpuMemArena();
   
-  // Additional performance optimizations
-  ort_session_options->SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);  // Use ORT_PARALLEL for multi-instance
-  ort_session_options->AddConfigEntry("session.intra_op.allow_spinning", "1");  // Reduce latency
-  ort_session_options->AddConfigEntry("session.inter_op.allow_spinning", "1");
-  
-  // Uncomment if you have GPU support (DirectML for Windows, CUDA for Linux/Windows)
-  // OrtCUDAProviderOptions cuda_options;
-  // cuda_options.device_id = 0;
-  // ort_session_options->AppendExecutionProvider_CUDA(cuda_options);
-  // Or for DirectML on Windows:
-  // ort_session_options->AppendExecutionProvider("DML");
-  
-  // Load the FP16 model
-  const char *model_path = "model/model_fp16.onnx";
+  const char *model_path = "model/model.onnx";
   ort_session = std::make_unique<Ort::Session>(*ort_env, model_path, *ort_session_options);
   
-  std::cout << "Loading FP16 model from: " << model_path << std::endl;
-  
-  // Pre-allocate buffers (estimate max size)
+  // Pre-allocate buffers
   input_rho_buffer.reserve(512);
   input_x_buffer.reserve(512);
   input_y_buffer.reserve(512);
   input_z_buffer.reserve(512);
-  output_buffer.reserve(125*8);  // 8 basis functions * 125 points
   
   // Pre-allocate shape vectors
   input_shape.resize(2);
   coord_shape.resize(2);
-  output_shape.resize(2);
   
-  // Warmup: run a dummy inference to initialize the model
-  // Model expects 8x8x8 = 512 cells and 9x9x9 = 729 points
-  std::vector<uint16_t> warmup_rho(64, float_to_fp16(2.0f));  // log10(100)
-  std::vector<uint16_t> warmup_coords(125, float_to_fp16(0.5f));
+  // Model expects 4x4x4 = 64 cells and 5x5x5 = 125 points
+  std::vector<float> warmup_rho(64, 2.0f);  // log10(100)
+  std::vector<float> warmup_coords(125, 0.5f);
   input_shape[0] = 1; input_shape[1] = 64;
   coord_shape[0] = 1; coord_shape[1] = 125;
   
   std::vector<Ort::Value> warmup_tensors;
   warmup_tensors.reserve(4);
-  // Note: size is in bytes for raw memory, but CreateTensor with type works differently
-  warmup_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-      memory_info, reinterpret_cast<Ort::Float16_t*>(warmup_rho.data()), warmup_rho.size(), input_shape.data(), 2));
+  warmup_tensors.push_back(Ort::Value::CreateTensor<float>(
+      memory_info, warmup_rho.data(), warmup_rho.size(), input_shape.data(), 2));
   for (int i = 0; i < 3; ++i) {
-    warmup_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-        memory_info, reinterpret_cast<Ort::Float16_t*>(warmup_coords.data()), warmup_coords.size(), coord_shape.data(), 2));
+    warmup_tensors.push_back(Ort::Value::CreateTensor<float>(
+        memory_info, warmup_coords.data(), warmup_coords.size(), coord_shape.data(), 2));
   }
   
   static const char* warmup_input_names[] = {"x1", "X", "Y", "Z"};
@@ -276,15 +168,6 @@ void DCProblem::make_grid() {
     coarse_tria.clear();
     coarse_tria.load(ia, 0);
   }
-
-  // std::ifstream ifs_rho(prm.get("iprefix") + ".rho");
-  // int nrhos;
-  // ifs_rho >> nrhos;
-  // for (int i = 0; i < nrhos; ++i) {
-  //   double r;
-  //   ifs_rho >> r;
-  //   rho.push_back(r);
-  // }
 
   std::ifstream ifs_emd(prm.get("iprefix") + ".emd");
   int nsources;
@@ -350,7 +233,6 @@ void DCProblem::assemble_system_ms() {
     dealii::DoFHandler<3>::active_cell_iterator coarse_cell_dh =
         dealii::DoFHandler<3>::active_cell_iterator(*coarse_cell, &coarse_dof_handler);
 
-    // double sigma_coarse = 1.0 / rho[coarse_cell_dh->material_id()];
     double sigma_coarse = 1.0 / coarse_cell_dh->material_id();
 
     cell_matrix = 0.0;
@@ -419,20 +301,17 @@ void DCProblem::assemble_system_ms() {
                                           dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
       std::vector<dealii::types::global_dof_index> local_dof_indices(fe.dofs_per_cell);
 
-      // Reuse pre-allocated buffers
       input_rho_buffer.clear();
       input_x_buffer.clear();
       input_y_buffer.clear();
       input_z_buffer.clear();
       
-      // Prepare resistivity input
       size_t n_cells = local_tria.n_active_cells();
       input_rho_buffer.reserve(n_cells);
       for (const auto &cell : local_dof_handler.active_cell_iterators()) {
           input_rho_buffer.push_back(log10f(static_cast<float>(cell->material_id())));
       }
       
-      // Prepare coordinate inputs - use vector instead of map for faster access
       std::map<dealii::types::global_dof_index, dealii::Point<3>> support_points;
       dealii::MappingQ<3> mapping(1);
       dealii::DoFTools::map_dofs_to_support_points(mapping, local_dof_handler, support_points);
@@ -449,48 +328,29 @@ void DCProblem::assemble_system_ms() {
           input_z_buffer.push_back(static_cast<float>(rf_point[2]));
       }
       
-      // Update shape vectors (reuse pre-allocated)
       input_shape[0] = 1; input_shape[1] = static_cast<int64_t>(input_rho_buffer.size());
       coord_shape[0] = 1; coord_shape[1] = static_cast<int64_t>(n_points);
       
-      // Convert FP32 to FP16
-      input_rho_fp16.resize(input_rho_buffer.size());
-      input_x_fp16.resize(input_x_buffer.size());
-      input_y_fp16.resize(input_y_buffer.size());
-      input_z_fp16.resize(input_z_buffer.size());
-      
-      for (size_t i = 0; i < input_rho_buffer.size(); ++i) {
-          input_rho_fp16[i] = float_to_fp16(input_rho_buffer[i]);
-      }
-      for (size_t i = 0; i < input_x_buffer.size(); ++i) {
-          input_x_fp16[i] = float_to_fp16(input_x_buffer[i]);
-          input_y_fp16[i] = float_to_fp16(input_y_buffer[i]);
-          input_z_fp16[i] = float_to_fp16(input_z_buffer[i]);
-      }
-      
-      // Create FP16 tensors
       std::vector<Ort::Value> input_tensors;
       input_tensors.reserve(4);
-      input_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-          memory_info, reinterpret_cast<Ort::Float16_t*>(input_rho_fp16.data()), input_rho_fp16.size(), 
+      input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_rho_buffer.data(), input_rho_buffer.size(), 
           input_shape.data(), 2));
-      input_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-          memory_info, reinterpret_cast<Ort::Float16_t*>(input_x_fp16.data()), input_x_fp16.size(), 
+      input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_x_buffer.data(), input_x_buffer.size(), 
           coord_shape.data(), 2));
-      input_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-          memory_info, reinterpret_cast<Ort::Float16_t*>(input_y_fp16.data()), input_y_fp16.size(), 
+      input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_y_buffer.data(), input_y_buffer.size(), 
           coord_shape.data(), 2));
-      input_tensors.push_back(Ort::Value::CreateTensor<Ort::Float16_t>(
-          memory_info, reinterpret_cast<Ort::Float16_t*>(input_z_fp16.data()), input_z_fp16.size(), 
+      input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_z_buffer.data(), input_z_buffer.size(), 
           coord_shape.data(), 2));
 
       static const char* input_names[] = {"x1", "X", "Y", "Z"};
       static const char* output_names[] = {"output"};
 
-      // Run inference with optimized approach
       auto start_time = std::chrono::high_resolution_clock::now();
 
-      // Method 1: Direct Run (current approach, keep for comparison)
       auto output_tensors = ort_session->Run(
           Ort::RunOptions{nullptr},
           input_names,
@@ -501,63 +361,23 @@ void DCProblem::assemble_system_ms() {
 
       auto end_time = std::chrono::high_resolution_clock::now();
       auto duration = std::chrono::duration<double>(end_time - start_time);
-      std::cout << "Inference time: " << std::fixed << std::setprecision(6)
+      std::cout << "Block execution time: " << std::fixed << std::setprecision(6)
           << duration.count() << " seconds" << std::endl;
 
-      // Get FP16 output and convert to FP32
-      Ort::Float16_t* output_data_fp16 = output_tensors[0].GetTensorMutableData<Ort::Float16_t>();
+      float* output_data = output_tensors[0].GetTensorMutableData<float>();
       size_t output_size = output_tensors[0].GetTensorTypeAndShapeInfo().GetElementCount();
 
-      // Process output data efficiently - convert FP16 to FP32 first
       const size_t values_per_cell = output_size / fe.dofs_per_cell;
-      const float threshold = 0.0009f;
-      
       for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-          const Ort::Float16_t* cell_output_fp16 = output_data_fp16 + i * values_per_cell;
-          const size_t copy_size = std::min(values_per_cell, static_cast<size_t>(local_solution[i].size()));
+          float* cell_output = output_data + i * values_per_cell;
+          size_t copy_size = std::min(values_per_cell, static_cast<size_t>(local_solution[i].size()));
           
-          // Convert FP16 to FP32 and copy
           for (unsigned int j = 0; j < copy_size; ++j) {
-            const float val = fp16_to_float(*reinterpret_cast<const uint16_t*>(&cell_output_fp16[j]));
-            local_solution[i][j] = (val < threshold && val != 0.0f) ? 0.0 : static_cast<double>(val);
+            float val = cell_output[j];
+            local_solution[i][j] = (val < 0.0009f && val != 0.0f) ? 0.0 : static_cast<double>(val);
           }
           local_solution[i].compress(dealii::VectorOperation::insert);
       }
-
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //     std::vector<float> solution_values(output_size/fe.dofs_per_cell);
-      //     std::copy(output_data + i*125, output_data + (i+1)*125, solution_values.begin());
-      //     for (unsigned int j = 0; j < solution_values.size() && j < local_solution[i].size(); ++j) {
-      //         local_solution[i][j] = solution_values[j];
-      //     }
-      //     local_solution[i].compress(dealii::VectorOperation::insert);
-      // }
-
-      // dealii::DataOut<3> data_out;
-      // data_out.attach_dof_handler(local_dof_handler);
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   data_out.add_data_vector(local_solution[i], "u" + dealii::Utilities::int_to_string(i));
-      // }
-      // data_out.build_patches();
-      // std::ofstream output(prm.get("oprefix") + "-" + coarse_cell->id().to_string() + ".vtk");
-      // data_out.write_vtk(output);
-
-      // std::ofstream solution_file("solution.txt", std::ios::app);
-      // if (!solution_file.is_open()) {
-      //   std::cerr << "Failed to open solution.txt for writing" << std::endl;
-      // }
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   if (solution_file.is_open()) {
-      //     for (unsigned int j = 0; j < local_solution[i].size(); ++j) {
-      //       solution_file << local_solution[i][j] << (j < local_solution[i].size() - 1 ? "," : "");
-      //     }
-      //     solution_file << std::endl;
-      //   }
-      // }
-      // if (solution_file.is_open()) {
-      //   solution_file.close();
-      //   std::cout << "Saved all local solutions to solution.txt" << std::endl;
-      // }
 
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
         unsigned int material_id = cell->material_id();
@@ -584,23 +404,6 @@ void DCProblem::assemble_system_ms() {
       }
     }
 
-    // std::ofstream cell_matrix_file("cell_matrix_dcd_nn.txt", std::ios::app);
-    // if (cell_matrix_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_file << std::endl;
-    //   }
-    //   cell_matrix_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd.txt for writing" << std::endl;
-    // }
-
     for (unsigned int f : coarse_cell_dh->face_indices()) {
       auto face = coarse_cell_dh->face(f);
       if (!face->at_boundary()) {
@@ -626,23 +429,6 @@ void DCProblem::assemble_system_ms() {
         }
       }
     }
-
-    // std::ofstream cell_matrix_r_file("cell_matrix_dcd_r.txt", std::ios::app);
-    // if (cell_matrix_r_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_r_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_r_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_r_file << std::endl;
-    //   }
-    //   cell_matrix_r_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd_r.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd_r.txt for writing" << std::endl;
-    // }
 
     std::vector<dealii::types::global_dof_index> dof_indices(fe.dofs_per_cell);
     coarse_cell_dh->get_dof_indices(dof_indices);
@@ -677,7 +463,6 @@ void DCProblem::solve() {
 void DCProblem::output_results() const {
   dealii::Vector<double> rho(tria.n_active_cells());
   for (auto cell : tria.active_cell_iterators()) {
-    // rho[cell->active_cell_index()] = this->rho[cell->material_id()];
     rho[cell->active_cell_index()] = cell->material_id();
   }
 
@@ -730,7 +515,7 @@ int main(int argc, char **argv) {
   dealii::Utilities::MPI::MPI_InitFinalize init(argc, argv, 1);
 
   if (argc < 2) {
-    std::cout << "Usage: dcfwd3d <parameter file>" << std::endl;
+    std::cout << "Usage: <parameter file>" << std::endl;
     return 0;
   }
 

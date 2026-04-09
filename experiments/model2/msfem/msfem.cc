@@ -1,17 +1,13 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/base/parameter_handler.h>
 #include <deal.II/base/quadrature_lib.h>
-
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
-
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
 #include <deal.II/fe/mapping_q1.h>
-
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/grid_tools.h>
-
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/full_matrix.h>
@@ -20,10 +16,8 @@
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/petsc_precondition.h>
 #include <deal.II/lac/vector.h>
-
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-
 #include <fstream>
 #include <numeric>
 
@@ -50,7 +44,6 @@ private:
 class DCProblem {
 public:
   DCProblem();
-
   void declare_parameters(const char *);
   void run();
 
@@ -66,8 +59,6 @@ private:
   std::vector<dealii::Point<3>> sources;
   std::vector<double> currents;
   std::vector<dealii::Point<3>> sites;
-
-  // std::vector<double> rho;
 
   dealii::Triangulation<3> coarse_tria, tria;
   dealii::FE_Q<3> fe;
@@ -112,15 +103,6 @@ void DCProblem::make_grid() {
     coarse_tria.clear();
     coarse_tria.load(ia, 0);
   }
-
-  // std::ifstream ifs_rho(prm.get("iprefix") + ".rho");
-  // int nrhos;
-  // ifs_rho >> nrhos;
-  // for (int i = 0; i < nrhos; ++i) {
-  //   double r;
-  //   ifs_rho >> r;
-  //   rho.push_back(r);
-  // }
 
   std::ifstream ifs_emd(prm.get("iprefix") + ".emd");
   
@@ -184,7 +166,6 @@ void DCProblem::assemble_system_ms() {
     dealii::DoFHandler<3>::active_cell_iterator coarse_cell_dh =
         dealii::DoFHandler<3>::active_cell_iterator(*coarse_cell, &coarse_dof_handler);
 
-    // double sigma_coarse = 1.0 / rho[coarse_cell_dh->material_id()];
     double sigma_coarse = 1.0 / coarse_cell_dh->material_id();
 
     cell_matrix = 0.0;
@@ -204,15 +185,10 @@ void DCProblem::assemble_system_ms() {
       std::vector<dealii::Triangulation<3>::active_cell_iterator> child_cells =
           dealii::GridTools::get_active_child_cells<dealii::Triangulation<3>>(coarse_cell_in_fine_tria);
 
-      // 创建从活动单元到材料ID的映射，用于保存原始细网格单元的材料ID
       std::map<dealii::Triangulation<3>::active_cell_iterator, unsigned int> material_id_map;
       
-      // 填充映射 - 保存原始细网格单元的材料ID
-      // 注意：这里需要使用类成员变量 dof_handler 而不是一个未声明的局部变量
       for (auto cell : child_cells) {
-        // 确保使用的是您类中定义的 dof_handler
-        // 假设您的类中有这个成员变量，如果没有，可能需要通过其他方式获取材料ID
-        unsigned int mat_id = cell->material_id(); // 直接使用单元的材料ID
+        unsigned int mat_id = cell->material_id();
         material_id_map[cell] = mat_id;
       }
 
@@ -220,21 +196,16 @@ void DCProblem::assemble_system_ms() {
       std::map<dealii::Triangulation<3>::active_cell_iterator, dealii::Triangulation<3>::active_cell_iterator> patch_map;
       dealii::GridTools::build_triangulation_from_patch<dealii::Triangulation<3>>(child_cells, local_tria, patch_map);
 
-      // 创建从本地三角剖分单元到原始材料ID的反向映射
       std::map<dealii::Triangulation<3>::active_cell_iterator, unsigned int> local_material_id_map;
       
-      // 为本地三角剖分的每个单元设置正确的材料ID
       for (auto cell = local_tria.begin_active(); cell != local_tria.end(); ++cell) {
-        // 查找这个本地单元对应的原始单元
         for (auto const& mapped_pair : patch_map) {
           if (mapped_pair.first == cell) {
-            // 如果找到对应关系，则使用原始单元的材料ID
             auto orig_material_id_it = material_id_map.find(mapped_pair.second);
             if (orig_material_id_it != material_id_map.end()) {
               cell->set_material_id(orig_material_id_it->second);
               local_material_id_map[cell] = orig_material_id_it->second;
             } else {
-              // 如果找不到材料ID，使用粗网格单元的材料ID作为默认值
               cell->set_material_id(coarse_cell_dh->material_id());
               local_material_id_map[cell] = coarse_cell_dh->material_id();
             }
@@ -286,7 +257,6 @@ void DCProblem::assemble_system_ms() {
 
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
         unsigned int material_id = cell->material_id();
-        // double sigma = 1.0 / rho[material_id];
         double sigma = 1.0 / material_id;
 
         local_fe_values.reinit(cell);
@@ -327,76 +297,13 @@ void DCProblem::assemble_system_ms() {
 
       auto end_time = std::chrono::high_resolution_clock::now();
       auto duration = std::chrono::duration<double>(end_time - start_time);
-      std::cout << "Else block execution time: " << std::fixed << std::setprecision(6) 
+      std::cout << "Block execution time: " << std::fixed << std::setprecision(6) 
           << duration.count() << " seconds" << std::endl;
-
-      // dealii::DataOut<3> data_out;
-      // data_out.attach_dof_handler(local_dof_handler);
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   data_out.add_data_vector(local_solution[i], "u" + dealii::Utilities::int_to_string(i));
-      // }
-      // data_out.build_patches();
-      // std::ofstream output(prm.get("oprefix") + "-" + coarse_cell->id().to_string() + ".vtk");
-      // data_out.write_vtk(output);
-
-      // std::ofstream localr_file("localr.txt", std::ios::app);
-      // if (localr_file.is_open()) {
-      //   bool first = true;
-      //   for (const auto &cell : local_dof_handler.active_cell_iterators()) {
-      //     if (!first) localr_file << ",";
-      //     // localr_file << rho[cell->material_id()];
-      //     localr_file << cell->material_id();
-      //     first = false;
-      //   }
-      //   localr_file << std::endl;
-      //   localr_file.close();
-      //   std::cout << "Saved local resistivity values to localr.txt" << std::endl;
-      // } else {
-      //   std::cerr << "Failed to open localr.txt for writing" << std::endl;
-      // }
-
-      // std::ofstream xyz_file("xyz.txt", std::ios::app);
-      // if (xyz_file.is_open()) {
-      //   std::map<dealii::types::global_dof_index, dealii::Point<3>> support_points;
-      //   dealii::MappingQ<3> mapping(1);
-      //   dealii::DoFTools::map_dofs_to_support_points(mapping, local_dof_handler, support_points);
-      //   bool first = true;
-      //   for (const auto &point_pair : support_points) {
-      //     const dealii::Point<3> &point = point_pair.second;
-      //     dealii::Point<3> rf_point = mapping.transform_real_to_unit_cell(coarse_cell_dh, point);
-      //     if (!first) xyz_file << ",";
-      //     xyz_file << rf_point[0] << "," << rf_point[1] << "," << rf_point[2];
-      //     first = false;
-      //   }
-      //   xyz_file << std::endl;
-      //   xyz_file.close();
-      //   std::cout << "Saved DOF coordinates to xyz.txt" << std::endl;
-      // } else {
-      //   std::cerr << "Failed to open xyz.txt for writing" << std::endl;
-      // }
-
-      // std::ofstream solution_file("solution.txt", std::ios::app);
-      // if (!solution_file.is_open()) {
-      //   std::cerr << "Failed to open solution.txt for writing" << std::endl;
-      // }
-      // for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-      //   if (solution_file.is_open()) {
-      //     for (unsigned int j = 0; j < local_solution[i].size(); ++j) {
-      //       solution_file << local_solution[i][j] << (j < local_solution[i].size() - 1 ? "," : "");
-      //     }
-      //     solution_file << std::endl;
-      //   }
-      // }
-      // if (solution_file.is_open()) {
-      //   solution_file.close();
-      //   std::cout << "Saved all local solutions to solution.txt" << std::endl;
-      // }
 
       auto start_time_ass = std::chrono::high_resolution_clock::now();
       
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
         unsigned int material_id = cell->material_id();
-        // double sigma = 1.0 / rho[material_id];
         double sigma = 1.0 / material_id;
         
         local_fe_values.reinit(cell);
@@ -425,23 +332,6 @@ void DCProblem::assemble_system_ms() {
       std::cout << "Assemble system execution1 time: " << std::fixed << std::setprecision(6) << duration_ass.count() << " seconds" << std::endl;
     }
 
-    // std::ofstream cell_matrix_file("cell_matrix_dcd.txt", std::ios::app);
-    // if (cell_matrix_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_file << std::endl;
-    //   }
-    //   cell_matrix_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd.txt for writing" << std::endl;
-    // }
-
     for (unsigned int f : coarse_cell_dh->face_indices()) {
       auto face = coarse_cell_dh->face(f);
       if (!face->at_boundary()) {
@@ -453,7 +343,6 @@ void DCProblem::assemble_system_ms() {
         continue;
       }
 
-      // Process all sources for this boundary face
       for (size_t src_idx = 0; src_idx < sources.size(); ++src_idx) {
         dealii::Tensor<1, 3> r = face->center() - sources[src_idx];
         for (unsigned int q_index : fe_face_values.quadrature_point_indices()) {
@@ -469,23 +358,6 @@ void DCProblem::assemble_system_ms() {
       }
     }
 
-    // std::ofstream cell_matrix_r_file("cell_matrix_dcd_r.txt", std::ios::app);
-    // if (cell_matrix_r_file.is_open()) {
-    //   for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-    //     for (unsigned int j = 0; j < fe.dofs_per_cell; ++j) {
-    //       cell_matrix_r_file << cell_matrix(i, j);
-    //       if (j < fe.dofs_per_cell - 1) {
-    //         cell_matrix_r_file << ",";
-    //       }
-    //     }
-    //     cell_matrix_r_file << std::endl;
-    //   }
-    //   cell_matrix_r_file.close();
-    //   std::cout << "Saved local system matrix to cell_matrix_dcd_r.txt" << std::endl;
-    // } else {
-    //   std::cerr << "Failed to open cell_matrix_dcd_r.txt for writing" << std::endl;
-    // }
-
     std::vector<dealii::types::global_dof_index> dof_indices(fe.dofs_per_cell);
     coarse_cell_dh->get_dof_indices(dof_indices);
 
@@ -494,7 +366,6 @@ void DCProblem::assemble_system_ms() {
 
   system_matrix.compress(dealii::VectorOperation::add);
 
-  // Create point source vector for multiple sources with different currents
   system_rhs = 0;
   for (size_t i = 0; i < sources.size(); ++i) {
     dealii::Vector<double> tmp_v(coarse_dof_handler.n_dofs());
@@ -518,7 +389,6 @@ void DCProblem::solve() {
 void DCProblem::output_results() const {
   dealii::Vector<double> rho(tria.n_active_cells());
   for (auto cell : tria.active_cell_iterators()) {
-    // rho[cell->active_cell_index()] = this->rho[cell->material_id()];
     rho[cell->active_cell_index()] = cell->material_id();
   }
 
@@ -571,7 +441,7 @@ int main(int argc, char **argv) {
   dealii::Utilities::MPI::MPI_InitFinalize init(argc, argv, 1);
 
   if (argc < 2) {
-    std::cout << "Usage: dcfwd3d <parameter file>" << std::endl;
+    std::cout << "Usage: <parameter file>" << std::endl;
     return 0;
   }
 
