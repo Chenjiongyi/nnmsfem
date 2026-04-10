@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <list>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <onnxruntime_cxx_api.h>
 
@@ -78,9 +79,70 @@ private:
 
   dealii::PETScWrappers::MPI::Vector solution;
   dealii::PETScWrappers::MPI::Vector system_rhs;
+
+  std::unique_ptr<Ort::Env> ort_env;
+  std::unique_ptr<Ort::Session> ort_session;
+  std::unique_ptr<Ort::SessionOptions> ort_session_options;
+  Ort::MemoryInfo memory_info;
+
+  std::vector<float> input_rho_buffer;
+  std::vector<float> input_x_buffer;
+  std::vector<float> input_y_buffer;
+  std::vector<float> input_z_buffer;
+
+  std::vector<int64_t> input_shape;
+  std::vector<int64_t> coord_shape;
 };
 
-DCProblem::DCProblem() : fe(1), coarse_dof_handler(coarse_tria) {}
+DCProblem::DCProblem()
+    : fe(1),
+      coarse_dof_handler(coarse_tria),
+      memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {
+  ort_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "DCProblem");
+
+  ort_session_options = std::make_unique<Ort::SessionOptions>();
+  ort_session_options->SetIntraOpNumThreads(0);
+  ort_session_options->SetInterOpNumThreads(0);
+  ort_session_options->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+  ort_session_options->EnableMemPattern();
+  ort_session_options->EnableCpuMemArena();
+
+  const char *model_path = "model/model.onnx";
+  ort_session = std::make_unique<Ort::Session>(*ort_env, model_path, *ort_session_options);
+
+  input_rho_buffer.reserve(512);
+  input_x_buffer.reserve(512);
+  input_y_buffer.reserve(512);
+  input_z_buffer.reserve(512);
+
+  input_shape.resize(2);
+  coord_shape.resize(2);
+
+  // Warm up once so first real block does not pay initialization overhead.
+  std::vector<float> warmup_rho(64, 2.0f);
+  std::vector<float> warmup_coords(125, 0.5f);
+  input_shape[0] = 1;
+  input_shape[1] = 64;
+  coord_shape[0] = 1;
+  coord_shape[1] = 125;
+
+  std::vector<Ort::Value> warmup_tensors;
+  warmup_tensors.reserve(4);
+  warmup_tensors.push_back(Ort::Value::CreateTensor<float>(
+      memory_info, warmup_rho.data(), warmup_rho.size(), input_shape.data(), 2));
+  for (int i = 0; i < 3; ++i) {
+    warmup_tensors.push_back(Ort::Value::CreateTensor<float>(
+        memory_info, warmup_coords.data(), warmup_coords.size(), coord_shape.data(), 2));
+  }
+
+  static const char *warmup_input_names[] = {"x1", "X", "Y", "Z"};
+  static const char *warmup_output_names[] = {"output"};
+  auto warmup_output = ort_session->Run(Ort::RunOptions{nullptr}, warmup_input_names,
+                                        warmup_tensors.data(), 4, warmup_output_names, 1);
+  (void)warmup_output;
+
+  std::cout << "ONNX model loaded successfully" << std::endl;
+}
 
 void DCProblem::declare_parameters(const char *fn) {
   prm.declare_entry("iprefix", "", dealii::Patterns::FileName(), "Prefix of the input files");
@@ -142,14 +204,6 @@ void DCProblem::setup_system() {
 }
 
 void DCProblem::assemble_system_ms() {
-  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "test");
-  Ort::SessionOptions session_options;
-  session_options.SetIntraOpNumThreads(1);
-  session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-  
-  const char *model_path = "model/model.onnx";
-  Ort::Session session(env, model_path, session_options);
-
   dealii::QGauss<3> quadrature_formula(fe.degree + 1);
   dealii::FEValues<3> fe_values(fe, quadrature_formula,
                                 dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
@@ -241,49 +295,53 @@ void DCProblem::assemble_system_ms() {
                                           dealii::update_values | dealii::update_gradients | dealii::update_JxW_values);
       std::vector<dealii::types::global_dof_index> local_dof_indices(fe.dofs_per_cell);
 
-      std::vector<float> input_rho;
-      for (const auto &cell : local_dof_handler.active_cell_iterators()) {
-          float resistivity = static_cast<float>(cell->material_id());
-          input_rho.push_back(std::log10(resistivity));
-      }
-      std::vector<int64_t> input_shape = {1, static_cast<int64_t>(input_rho.size())};
-      Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-      Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
-          memory_info,
-          input_rho.data(),
-          input_rho.size(),
-          input_shape.data(),
-          input_shape.size()
-      );
+        input_rho_buffer.clear();
+        input_x_buffer.clear();
+        input_y_buffer.clear();
+        input_z_buffer.clear();
 
-      std::vector<float> input_x, input_y, input_z;
+        const size_t n_cells = local_tria.n_active_cells();
+        input_rho_buffer.reserve(n_cells);
+      for (const auto &cell : local_dof_handler.active_cell_iterators()) {
+        input_rho_buffer.push_back(std::log10(static_cast<float>(cell->material_id())));
+      }
+
       std::map<dealii::types::global_dof_index, dealii::Point<3>> support_points;
       dealii::MappingQ<3> mapping(1);
       dealii::DoFTools::map_dofs_to_support_points(mapping, local_dof_handler, support_points);
+
+        const size_t n_points = support_points.size();
+        input_x_buffer.reserve(n_points);
+        input_y_buffer.reserve(n_points);
+        input_z_buffer.reserve(n_points);
+
       for (const auto &point_pair : support_points) {
-          const dealii::Point<3> &point = point_pair.second;
-          dealii::Point<3> rf_point = mapping.transform_real_to_unit_cell(coarse_cell_dh, point);
-          input_x.push_back(static_cast<float>(rf_point[0]));
-          input_y.push_back(static_cast<float>(rf_point[1]));
-          input_z.push_back(static_cast<float>(rf_point[2]));
+        dealii::Point<3> rf_point = mapping.transform_real_to_unit_cell(coarse_cell_dh, point_pair.second);
+        input_x_buffer.push_back(static_cast<float>(rf_point[0]));
+        input_y_buffer.push_back(static_cast<float>(rf_point[1]));
+        input_z_buffer.push_back(static_cast<float>(rf_point[2]));
       }
-      std::vector<int64_t> coord_shape = {1, static_cast<int64_t>(input_x.size())};
-      Ort::Value input_tensor_x = Ort::Value::CreateTensor<float>(
-          memory_info, input_x.data(), input_x.size(), coord_shape.data(), coord_shape.size());
-      Ort::Value input_tensor_y = Ort::Value::CreateTensor<float>(
-          memory_info, input_y.data(), input_y.size(), coord_shape.data(), coord_shape.size());
-      Ort::Value input_tensor_z = Ort::Value::CreateTensor<float>(
-          memory_info, input_z.data(), input_z.size(), coord_shape.data(), coord_shape.size());
+
+        input_shape[0] = 1;
+        input_shape[1] = static_cast<int64_t>(input_rho_buffer.size());
+        coord_shape[0] = 1;
+        coord_shape[1] = static_cast<int64_t>(n_points);
+
       std::vector<Ort::Value> input_tensors;
-      input_tensors.push_back(std::move(input_tensor));
-      input_tensors.push_back(std::move(input_tensor_x));
-      input_tensors.push_back(std::move(input_tensor_y)); 
-      input_tensors.push_back(std::move(input_tensor_z));
+        input_tensors.reserve(4);
+        input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_rho_buffer.data(), input_rho_buffer.size(), input_shape.data(), 2));
+        input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_x_buffer.data(), input_x_buffer.size(), coord_shape.data(), 2));
+        input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_y_buffer.data(), input_y_buffer.size(), coord_shape.data(), 2));
+        input_tensors.push_back(Ort::Value::CreateTensor<float>(
+          memory_info, input_z_buffer.data(), input_z_buffer.size(), coord_shape.data(), 2));
 
-      const char* input_names[] = {"x1", "X", "Y", "Z"};
-      const char* output_names[] = {"output"};
+        static const char *input_names[] = {"x1", "X", "Y", "Z"};
+        static const char *output_names[] = {"output"};
 
-      auto output_tensors = session.Run(
+        auto output_tensors = ort_session->Run(
           Ort::RunOptions{nullptr},
           input_names,
           input_tensors.data(),
@@ -298,19 +356,17 @@ void DCProblem::assemble_system_ms() {
 
       float* output_data = output_tensors[0].GetTensorMutableData<float>();
       size_t output_size = output_tensors[0].GetTensorTypeAndShapeInfo().GetElementCount();
-      std::cout << "Output size: " << output_size << std::endl;
 
+      const size_t values_per_cell = output_size / fe.dofs_per_cell;
       for (unsigned int i = 0; i < fe.dofs_per_cell; ++i) {
-          std::vector<float> solution_values(output_size/fe.dofs_per_cell);
-          std::copy(output_data + i*125, output_data + (i+1)*125, solution_values.begin());
-          for (unsigned int j = 0; j < solution_values.size() && j < local_solution[i].size(); ++j) {
-            if (solution_values[j] < 0.0009 && solution_values[j] != 0) {
-              local_solution[i][j] = -0.0;
-            } else {
-              local_solution[i][j] = solution_values[j];
-            }
-          }
-          local_solution[i].compress(dealii::VectorOperation::insert);
+        float *cell_output = output_data + i * values_per_cell;
+        const size_t copy_size = std::min(values_per_cell, static_cast<size_t>(local_solution[i].size()));
+
+        for (unsigned int j = 0; j < copy_size; ++j) {
+          const float val = cell_output[j];
+          local_solution[i][j] = (val < 0.0009f && val != 0.0f) ? 0.0 : static_cast<double>(val);
+        }
+        local_solution[i].compress(dealii::VectorOperation::insert);
       }
 
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
@@ -395,8 +451,9 @@ void DCProblem::simulate_wenner_line() {
   dealii::FEFaceValues<3> fe_face_values(fe, face_quadrature_formula,
                                          dealii::update_values | dealii::update_quadrature_points |
                                              dealii::update_normal_vectors | dealii::update_JxW_values);
-  dealii::FullMatrix<double> cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell);
-  std::vector<dealii::types::global_dof_index> dof_indices(fe.dofs_per_cell);
+  const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+  dealii::FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
+  std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
   std::ofstream ofs(prm.get("oprefix") + "-wenner-rho.txt");
   ofs << "# a center_x A_x B_x M_x N_x rho_app\n";
@@ -415,25 +472,26 @@ void DCProblem::simulate_wenner_line() {
       const dealii::Point<3> B(0.0, Ax + 3.0 * a, 0.0);
 
       const std::vector<dealii::Point<3>> cfg_sources = {A, B};
+      const std::vector<double>           cfg_currents = {current, -current};
 
       system_matrix.copy_from(stiffness_matrix);
 
-      for (const auto &coarse_cell_dh : coarse_dof_handler.active_cell_iterators()) {
-        double sigma_coarse = 1.0 / coarse_cell_dh->material_id();
-        cell_matrix = 0.0;
+      for (const auto &cell : coarse_dof_handler.active_cell_iterators()) {
+        double sigma = 1.0 / cell->material_id();
+        cell_matrix = 0;
 
-        for (unsigned int f : coarse_cell_dh->face_indices()) {
-          auto face = coarse_cell_dh->face(f);
+        for (unsigned int f : cell->face_indices()) {
+          auto face = cell->face(f);
           if (!face->at_boundary()) continue;
 
-          fe_face_values.reinit(coarse_cell_dh, f);
+          fe_face_values.reinit(cell, f);
           if (fe_face_values.get_normal_vectors()[0][2] < 0) continue;
 
-          for (const auto &src : cfg_sources) {
-            dealii::Tensor<1, 3> r = face->center() - src;
+          for (size_t src_idx = 0; src_idx < cfg_sources.size(); ++src_idx) {
+            dealii::Tensor<1, 3> r = face->center() - cfg_sources[src_idx];
             for (unsigned int q_index : fe_face_values.quadrature_point_indices()) {
               dealii::Tensor<1, 3> n = fe_face_values.normal_vector(q_index);
-              double foo = sigma_coarse * dealii::scalar_product(r, n) / (r.norm() * n.norm() * r.norm());
+              double foo = sigma * dealii::scalar_product(r, n) / (r.norm() * n.norm() * r.norm());
               for (unsigned int i : fe_face_values.dof_indices())
                 for (unsigned int j : fe_face_values.dof_indices())
                   cell_matrix(i, j) += foo * fe_face_values.shape_value(i, q_index) *
@@ -443,26 +501,20 @@ void DCProblem::simulate_wenner_line() {
           }
         }
 
-        coarse_cell_dh->get_dof_indices(dof_indices);
-        constraints.distribute_local_to_global(cell_matrix, dof_indices, system_matrix);
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(cell_matrix, local_dof_indices, system_matrix);
       }
       system_matrix.compress(dealii::VectorOperation::add);
 
       system_rhs = 0;
-
-      dealii::Vector<double> tmp_A(coarse_dof_handler.n_dofs());
-      dealii::VectorTools::create_point_source_vector(coarse_dof_handler, A, tmp_A);
-      tmp_A *= current;
-      dealii::PETScWrappers::MPI::Vector tmp_A_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
-      tmp_A_p = tmp_A;
-      system_rhs += tmp_A_p;
-
-      dealii::Vector<double> tmp_B(coarse_dof_handler.n_dofs());
-      dealii::VectorTools::create_point_source_vector(coarse_dof_handler, B, tmp_B);
-      tmp_B *= -current;
-      dealii::PETScWrappers::MPI::Vector tmp_B_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
-      tmp_B_p = tmp_B;
-      system_rhs += tmp_B_p;
+      for (size_t i = 0; i < cfg_sources.size(); ++i) {
+        dealii::Vector<double> tmp(coarse_dof_handler.n_dofs());
+        dealii::VectorTools::create_point_source_vector(coarse_dof_handler, cfg_sources[i], tmp);
+        tmp *= cfg_currents[i];
+        dealii::PETScWrappers::MPI::Vector tmp_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
+        tmp_p = tmp;
+        system_rhs += tmp_p;
+      }
 
       solve();
 

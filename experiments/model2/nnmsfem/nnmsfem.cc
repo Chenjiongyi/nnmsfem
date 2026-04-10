@@ -105,18 +105,15 @@ DCProblem::DCProblem() : fe(1), coarse_dof_handler(coarse_tria),
   const char *model_path = "model/model.onnx";
   ort_session = std::make_unique<Ort::Session>(*ort_env, model_path, *ort_session_options);
   
-  // Pre-allocate buffers
-  input_rho_buffer.reserve(512);
-  input_x_buffer.reserve(512);
-  input_y_buffer.reserve(512);
-  input_z_buffer.reserve(512);
+  input_rho_buffer.reserve(1024);
+  input_x_buffer.reserve(1024);
+  input_y_buffer.reserve(1024);
+  input_z_buffer.reserve(1024);
   
-  // Pre-allocate shape vectors
   input_shape.resize(2);
   coord_shape.resize(2);
   
-  // Model expects 4x4x4 = 64 cells and 5x5x5 = 125 points
-  std::vector<float> warmup_rho(64, 2.0f);  // log10(100)
+  std::vector<float> warmup_rho(64, 2.0f);
   std::vector<float> warmup_coords(125, 0.5f);
   input_shape[0] = 1; input_shape[1] = 64;
   coord_shape[0] = 1; coord_shape[1] = 125;

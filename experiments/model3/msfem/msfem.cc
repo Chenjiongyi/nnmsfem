@@ -73,6 +73,7 @@ private:
   dealii::DoFHandler<3> coarse_dof_handler;
 
   dealii::AffineConstraints<double> constraints;
+  dealii::PETScWrappers::MPI::SparseMatrix stiffness_matrix;
   dealii::PETScWrappers::MPI::SparseMatrix system_matrix;
 
   dealii::PETScWrappers::MPI::Vector solution;
@@ -134,6 +135,7 @@ void DCProblem::setup_system() {
   dsp.compress();
 
   system_matrix.reinit(coarse_dof_handler.locally_owned_dofs(), coarse_dof_handler.locally_owned_dofs(), dsp, MPI_COMM_SELF);
+  stiffness_matrix.reinit(coarse_dof_handler.locally_owned_dofs(), coarse_dof_handler.locally_owned_dofs(), dsp, MPI_COMM_SELF);
 
   solution.reinit(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
   system_rhs.reinit(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
@@ -350,10 +352,11 @@ void DCProblem::assemble_system_ms() {
     std::vector<dealii::types::global_dof_index> dof_indices(fe.dofs_per_cell);
     coarse_cell_dh->get_dof_indices(dof_indices);
 
-    constraints.distribute_local_to_global(cell_matrix, dof_indices, system_matrix);
+    constraints.distribute_local_to_global(cell_matrix, dof_indices, stiffness_matrix);
   }
 
-  system_matrix.compress(dealii::VectorOperation::add);
+  stiffness_matrix.compress(dealii::VectorOperation::add);
+  system_matrix.copy_from(stiffness_matrix);
   system_rhs = 0;
 }
 
@@ -381,12 +384,20 @@ void DCProblem::simulate_wenner_line() {
   }
 
   const double start_x = prm.get_double("wenner_start_x");
-  const double end_x = prm.get_double("wenner_end_x");
+  const double end_x   = prm.get_double("wenner_end_x");
   const double current = prm.get_double("wenner_current");
 
   if (current <= 0.0) {
     throw std::runtime_error("wenner_current must be positive");
   }
+
+  dealii::QGauss<2> face_quadrature_formula(fe.degree + 1);
+  dealii::FEFaceValues<3> fe_face_values(fe, face_quadrature_formula,
+                                         dealii::update_values | dealii::update_quadrature_points |
+                                             dealii::update_normal_vectors | dealii::update_JxW_values);
+  const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+  dealii::FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
+  std::vector<dealii::types::global_dof_index> local_dof_indices(dofs_per_cell);
 
   std::ofstream ofs(prm.get("oprefix") + "-wenner-rho.txt");
   ofs << "# a center_x A_x B_x M_x N_x rho_app\n";
@@ -404,32 +415,61 @@ void DCProblem::simulate_wenner_line() {
       const dealii::Point<3> N(0.0, Ax + 2.0 * a, 0.0);
       const dealii::Point<3> B(0.0, Ax + 3.0 * a, 0.0);
 
+      const std::vector<dealii::Point<3>> cfg_sources = {A, B};
+      const std::vector<double>           cfg_currents = {current, -current};
+
+      system_matrix.copy_from(stiffness_matrix);
+
+      for (const auto &cell : coarse_dof_handler.active_cell_iterators()) {
+        double sigma = 1.0 / cell->material_id();
+        cell_matrix = 0;
+
+        for (unsigned int f : cell->face_indices()) {
+          auto face = cell->face(f);
+          if (!face->at_boundary()) continue;
+
+          fe_face_values.reinit(cell, f);
+          if (fe_face_values.get_normal_vectors()[0][2] < 0) continue;
+
+          for (size_t src_idx = 0; src_idx < cfg_sources.size(); ++src_idx) {
+            dealii::Tensor<1, 3> r = face->center() - cfg_sources[src_idx];
+            for (unsigned int q_index : fe_face_values.quadrature_point_indices()) {
+              dealii::Tensor<1, 3> n = fe_face_values.normal_vector(q_index);
+              double foo = sigma * dealii::scalar_product(r, n) / (r.norm() * n.norm() * r.norm());
+              for (unsigned int i : fe_face_values.dof_indices())
+                for (unsigned int j : fe_face_values.dof_indices())
+                  cell_matrix(i, j) += foo * fe_face_values.shape_value(i, q_index) *
+                                       fe_face_values.shape_value(j, q_index) *
+                                       fe_face_values.JxW(q_index);
+            }
+          }
+        }
+
+        cell->get_dof_indices(local_dof_indices);
+        constraints.distribute_local_to_global(cell_matrix, local_dof_indices, system_matrix);
+      }
+      system_matrix.compress(dealii::VectorOperation::add);
+
       system_rhs = 0;
-
-      dealii::Vector<double> tmp_A(coarse_dof_handler.n_dofs());
-      dealii::VectorTools::create_point_source_vector(coarse_dof_handler, A, tmp_A);
-      tmp_A *= current;
-      dealii::PETScWrappers::MPI::Vector tmp_A_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
-      tmp_A_p = tmp_A;
-      system_rhs += tmp_A_p;
-
-      dealii::Vector<double> tmp_B(coarse_dof_handler.n_dofs());
-      dealii::VectorTools::create_point_source_vector(coarse_dof_handler, B, tmp_B);
-      tmp_B *= -current;
-      dealii::PETScWrappers::MPI::Vector tmp_B_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
-      tmp_B_p = tmp_B;
-      system_rhs += tmp_B_p;
+      for (size_t i = 0; i < cfg_sources.size(); ++i) {
+        dealii::Vector<double> tmp(coarse_dof_handler.n_dofs());
+        dealii::VectorTools::create_point_source_vector(coarse_dof_handler, cfg_sources[i], tmp);
+        tmp *= cfg_currents[i];
+        dealii::PETScWrappers::MPI::Vector tmp_p(coarse_dof_handler.locally_owned_dofs(), MPI_COMM_SELF);
+        tmp_p = tmp;
+        system_rhs += tmp_p;
+      }
 
       solve();
 
       const double uM = dealii::VectorTools::point_value(coarse_dof_handler, solution, M);
       const double uN = dealii::VectorTools::point_value(coarse_dof_handler, solution, N);
-      const double deltaV = uM - uN;
+      const double deltaV  = uM - uN;
       const double rho_app = 2.0 * dealii::numbers::PI * a * deltaV / current;
       const double center_x = Ax + 1.5 * a;
 
-      ofs << a << " " << center_x << " " << Ax << " " << Ax + 3.0 * a << " " << Ax + a << " " << Ax + 2.0 * a
-          << " " << rho_app << std::endl;
+      ofs << a << " " << center_x << " " << Ax << " " << Ax + 3.0 * a
+          << " " << Ax + a << " " << Ax + 2.0 * a << " " << rho_app << std::endl;
 
       ++configuration_count;
     }
