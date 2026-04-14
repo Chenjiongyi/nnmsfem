@@ -299,8 +299,6 @@ void DCProblem::assemble_system_ms() {
       auto duration = std::chrono::duration<double>(end_time - start_time);
       std::cout << "Block execution time: " << std::fixed << std::setprecision(6) 
           << duration.count() << " seconds" << std::endl;
-
-      auto start_time_ass = std::chrono::high_resolution_clock::now();
       
       for (dealii::DoFHandler<3>::active_cell_iterator cell : local_dof_handler.active_cell_iterators()) {
         unsigned int material_id = cell->material_id();
@@ -326,10 +324,6 @@ void DCProblem::assemble_system_ms() {
           }
         }
       }
-
-      auto end_time_ass = std::chrono::high_resolution_clock::now();
-      auto duration_ass = std::chrono::duration<double>(end_time_ass - start_time_ass);
-      std::cout << "Assemble system execution1 time: " << std::fixed << std::setprecision(6) << duration_ass.count() << " seconds" << std::endl;
     }
 
     for (unsigned int f : coarse_cell_dh->face_indices()) {

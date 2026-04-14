@@ -36,7 +36,6 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
                            lr=config["learning_rate"], 
                            weight_decay=config["weight_decay"])
     
-    # 使用改进的学习率调度器
     if config.get("use_cosine_scheduler", False):
         scheduler = CosineWarmupScheduler(optimizer, 
                                        config["warmup_epochs"], 
@@ -55,7 +54,6 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
     stale = 0
     last_lr = config["learning_rate"]
     
-    # 改进的损失函数
     improved_criterion = ImprovedLoss(
         peak_weight=config.get("peak_weight", 2.0),
         gradient_weight=config.get("gradient_weight", 0.3),
@@ -64,14 +62,11 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
         non_negative_weight=config.get("non_negative_weight", 2.0)
     )
     
-    # 自适应权重调整
     def get_adaptive_weights(epoch, total_epochs):
-        # 前期主要学习数据拟合，后期加强物理约束
         data_weight = max(0.8 - 0.3 * epoch / total_epochs, 0.3)
         physics_weight = min(0.2 + 0.5 * epoch / total_epochs, 0.7)
         return data_weight, physics_weight
     
-    # 数据增强
     data_augmentor = DataAugmentation() if config.get("use_data_augmentation", False) else None
     
     history = {
@@ -86,13 +81,11 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
         total_train_data_loss = 0
         total_train_physics_loss = 0
         
-        # 获取当前epoch的自适应权重
         current_data_weight, current_physics_weight = get_adaptive_weights(epoch, config["epochs"])
         
         for x1_batch, x2_batch, y_batch in train_loader:
             optimizer.zero_grad()
             
-            # 数据增强
             if data_augmentor is not None:
                 x1_batch, x2_batch, y_batch = data_augmentor(x1_batch, x2_batch, y_batch)
             
@@ -108,29 +101,24 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
             Y_tr.requires_grad_(True)
             Z_tr.requires_grad_(True)
             y_pred = model(x1_batch, X_tr, Y_tr, Z_tr)
-            # 修改输出尺寸
             y_pred = y_pred.view(-1, 8, 125)
             
-            # 使用改进的损失函数
             data_loss_value, loss_components = improved_criterion(y_pred, y_batch)
             physics_loss = physics_function_loss(X_tr, Y_tr, Z_tr, y_pred)
             
-            # 综合损失
             loss = current_data_weight * data_loss_value + current_physics_weight * physics_loss
             
-            # L2正则化
             if config.get("l2_regularization", 0) > 0:
                 l2_reg = sum(p.pow(2.0).sum() for p in model.parameters())
                 loss += config["l2_regularization"] * l2_reg
             
             loss.backward()
             
-            # 梯度裁剪
             if config.get("gradient_clipping", 0) > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config["gradient_clipping"])
             
             optimizer.step()
-            data_loss = data_loss_value  # 为了保持兼容性
+            data_loss = data_loss_value
             total_train_loss += loss.item()
             total_train_data_loss += data_loss.item()
             total_train_physics_loss += physics_loss.item()
@@ -141,7 +129,6 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
         total_valid_physics_loss = 0
         
         for x1_batch, x2_batch, y_batch in valid_loader:
-            # 准备坐标数据
             X_arr, Y_arr, Z_arr = [], [], []
             for i in range(x2_batch.size()[0]):
                 X_arr.append(x2_batch[i][:, 0].cpu().numpy())
@@ -154,15 +141,12 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
             Y_tr.requires_grad_(True)
             Z_tr.requires_grad_(True)
             
-            # 计算预测（需要梯度用于物理损失）
             y_pred = model(x1_batch, X_tr, Y_tr, Z_tr)
             y_pred = y_pred.view(-1, 8, 125)
             
-            # 计算数据损失（不需要梯度）
             with torch.no_grad():
                 data_loss_value, _ = improved_criterion(y_pred, y_batch)
             
-            # 计算物理损失（需要梯度）
             physics_loss = physics_function_loss(X_tr, Y_tr, Z_tr, y_pred)
             loss = current_data_weight * data_loss_value + current_physics_weight * physics_loss
             
@@ -174,14 +158,12 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
 
         current_lr = optimizer.param_groups[0]['lr']
         
-        # 学习率调度
         if config.get("use_cosine_scheduler", False):
             new_lr = scheduler.step(epoch)
         else:
             scheduler.step(val_loss)
             new_lr = optimizer.param_groups[0]['lr']
-            
-        # 检查学习率变化
+
         if new_lr != last_lr:
             print(f"Learning rate 由 {last_lr:.2e} 更新为: {new_lr:.2e}")
             last_lr = new_lr
@@ -195,7 +177,6 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
         train_loss_list.append(train_loss)
         valid_loss_list.append(valid_loss)
         
-        # 记录历史数据
         history['train_loss'].append(train_loss)
         history['train_data_loss'].append(train_data_loss)
         history['train_physics_loss'].append(train_physics_loss)
@@ -209,14 +190,11 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
               f'Data Weight = {current_data_weight:.3f}, Physics Weight = {current_physics_weight:.3f}, '
               f'Learning Rate = {current_lr:.2e}')
         
-        # 在每个epoch结束后立即记录训练历史
         if epoch == 0:
-            # 第一个epoch时创建文件并写入表头
             header = "epoch train_loss train_data_loss train_physics_loss valid_loss valid_data_loss valid_physics_loss learning_rate"
             with open(f"{save_dir}/training_history.txt", "w") as f:
                 f.write(header + "\n")
         
-        # 写入当前epoch的数据
         with open(f"{save_dir}/training_history.txt", "a") as f:
             f.write(f"{epoch+1}\t{train_loss:.6e}\t{train_data_loss:.6e}\t{train_physics_loss:.6e}\t{valid_loss:.6e}\t{valid_data_loss:.6e}\t{valid_physics_loss:.6e}\t{current_lr:.6e}\n")
     
@@ -231,7 +209,6 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
                 print(f'No improvment {config["patience"]} consecutive epochs, early stopping')
                 break
     
-    # 计算训练总时间
     end_time = datetime.now()
     training_time = end_time - start_time
     print(f"\n训练总用时: {training_time}")
@@ -256,25 +233,21 @@ config = {
     "scheduler_factor": 0.7,
     "min_lr": 1e-8,
     
-    # 新增参数
     "use_cosine_scheduler": True,  # 使用余弦退火调度器
     "warmup_epochs": 50,           # 预热轮数
     "weight_decay": 1e-5,          # 权重衰减
     "gradient_clipping": 1.0,      # 梯度裁剪
     "l2_regularization": 1e-6,     # L2正则化
     
-    # 损失函数权重
     "peak_weight": 3.0,            # 峰值损失权重
     "gradient_weight": 0.5,        # 梯度损失权重  
     "spectral_weight": 0.3,        # 频谱损失权重
-    "constraint_weight": 10.0,     # 物理约束权重（归一化约束）
+    "constraint_weight": 10.0,     # 物理约束权重
     "non_negative_weight": 5.0,    # 非负性和边界约束权重
     
-    # 数据增强
     "use_data_augmentation": True,  # 启用数据增强
 }
 
-# 保存配置到txt文件
 with open(f"{save_dir}/config.txt", "w") as f:
     for key, value in config.items():
         f.write(f"{key}: {value}\n")
@@ -290,7 +263,6 @@ torch.manual_seed(config["seed"])
 url = 'data/' + config["dataset"] + '/'
 x1, x2, y = get_data(url, device)
 
-# 打印数据形状
 print("数据形状:")
 print(f"x1: {x1.shape};")
 print(f"x2: {x2.shape};")

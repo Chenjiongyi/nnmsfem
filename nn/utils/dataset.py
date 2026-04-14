@@ -34,18 +34,14 @@ class DataAugmentation:
         self.coord_noise_std = coord_noise_std
         
     def __call__(self, x1, x2, y):
-        # 添加高斯噪声到输出
         if torch.rand(1) < 0.3:
             noise = torch.randn_like(y) * self.noise_std
             y = y + noise
             
-        # 随机缩放 - 修复uniform函数的问题
         if torch.rand(1) < 0.2:
-            # 使用rand生成[0,1)之间的随机数，然后缩放到[0.98,1.02]范围
             scale = 0.98 + (1.02 - 0.98) * torch.rand(1, device=y.device)
             y = y * scale
-            
-        # 坐标小幅扰动
+        
         if torch.rand(1) < 0.3:
             coord_noise = torch.randn_like(x2) * self.coord_noise_std
             x2 = x2 + coord_noise

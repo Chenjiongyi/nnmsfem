@@ -33,18 +33,14 @@ class ImprovedLoss:
         self.non_negative_weight = non_negative_weight
     
     def __call__(self, y_pred, y_true):
-        # 重新整形数据
         y_pred_reshaped = y_pred.view(-1, 8, 125)
         y_true_reshaped = y_true.view(-1, 8, 125)
         
-        # 基础MSE损失
         mse_loss = F.mse_loss(y_pred, y_true)
         
-        # 峰值感知损失 - 对高值区域给予更大权重
         y_true_flat = y_true.view(-1)
         y_pred_flat = y_pred.view(-1)
         
-        # 计算75%分位数作为峰值阈值
         peak_threshold = torch.quantile(y_true_flat, 0.75)
         peak_mask = y_true_flat > peak_threshold
         
@@ -53,12 +49,10 @@ class ImprovedLoss:
         else:
             peak_loss = torch.tensor(0.0, device=y_pred.device)
         
-        # 梯度损失 - 保持变化趋势
         grad_pred = torch.diff(y_pred_reshaped, dim=-1)
         grad_true = torch.diff(y_true_reshaped, dim=-1)
         gradient_loss = F.mse_loss(grad_pred, grad_true) * self.gradient_weight
         
-        # 频域损失 - 保持频率特征
         try:
             fft_pred = torch.fft.fft(y_pred_reshaped, dim=-1)
             fft_true = torch.fft.fft(y_true_reshaped, dim=-1)
@@ -66,19 +60,14 @@ class ImprovedLoss:
         except:
             spectral_loss = torch.tensor(0.0, device=y_pred.device)
         
-        # 物理约束损失
         physics_constraint_loss = torch.tensor(0.0, device=y_pred.device)
         
-        # 1. 归一化约束：每个空间点的8个基函数值之和应该为1
-        # y_pred_reshaped: (batch, 8, 125) -> (batch, 125, 8) -> sum along last dim
         sum_constraint = torch.sum(y_pred_reshaped, dim=1)  # (batch, 125)
         target_sum = torch.ones_like(sum_constraint)
         normalization_loss = F.mse_loss(sum_constraint, target_sum) * self.constraint_weight
         
-        # 2. 非负性约束：所有值应该非负
         negative_penalty = torch.sum(F.relu(-y_pred_reshaped)) * self.non_negative_weight
         
-        # 3. 边界约束：所有值应该在[0,1]之间
         upper_bound_penalty = torch.sum(F.relu(y_pred_reshaped - 1.0)) * self.non_negative_weight
         
         physics_constraint_loss = normalization_loss + negative_penalty + upper_bound_penalty

@@ -75,14 +75,11 @@ class PINN1(nn.Module):
             ) for _ in range(8)
         ])
         
-        # 权重初始化
         self._init_weights()
     
     def _init_weights(self):
-        """改进的权重初始化"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # He初始化适用于GELU激活函数
                 nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
@@ -107,15 +104,11 @@ class PINN1(nn.Module):
         
         output = torch.stack(outputs, dim=1)  # shape: (batch, 8, 125)
         
-        # 应用物理约束：
-        # 1. 使用ReLU确保非负性
         output = F.relu(output)
         
-        # 2. 对每个空间点的8个基函数值进行softmax归一化，确保和为1
-        # 重新整形为 (batch*125, 8) 进行softmax，然后再恢复形状
         batch_size = output.shape[0]
-        output_reshaped = output.permute(0, 2, 1).contiguous().view(-1, 8)  # (batch*125, 8)
-        output_normalized = F.softmax(output_reshaped, dim=1)  # 每个空间点的8个值归一化
-        output_final = output_normalized.view(batch_size, 125, 8).permute(0, 2, 1)  # 恢复为 (batch, 8, 125)
+        output_reshaped = output.permute(0, 2, 1).contiguous().view(-1, 8)
+        output_normalized = F.softmax(output_reshaped, dim=1)
+        output_final = output_normalized.view(batch_size, 125, 8).permute(0, 2, 1)
         
         return output_final.reshape(-1, 8*125)
