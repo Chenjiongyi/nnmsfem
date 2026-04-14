@@ -10,7 +10,7 @@ print(torch.version.cuda)
 device = 'cpu'
 
 model = PINN1().to(device)
-model_url = 'results/fold_1_best.ckpt'
+model_url = 'results/model_best.ckpt'
 model.load_state_dict(torch.load(model_url))
 print('Model loaded successfully!')
 
@@ -30,9 +30,10 @@ torch.onnx.export(
     args=(x1, X, Y, Z),
     f="results/model.onnx",
     export_params=True,
+    dynamo=False,
     opset_version=11,
     input_names=['x1', 'X', 'Y', 'Z'],
     output_names=['output'],
 )
 
-print('Model saved as my_model.onnx')
+print('Model saved as model.onnx')

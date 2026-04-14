@@ -165,7 +165,7 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
             new_lr = optimizer.param_groups[0]['lr']
 
         if new_lr != last_lr:
-            print(f"Learning rate 由 {last_lr:.2e} 更新为: {new_lr:.2e}")
+            print(f"Learning rate update from {last_lr:.2e} to {new_lr:.2e}")
             last_lr = new_lr
 
         train_loss = total_train_loss/len(train_loader)
@@ -211,7 +211,7 @@ def train_model(config, model, train_loader, valid_loader, device, fold=0):
     
     end_time = datetime.now()
     training_time = end_time - start_time
-    print(f"\n训练总用时: {training_time}")
+    print(f"\nTotal training time: {training_time}")
     with open(f"{save_dir}/config.txt", "a") as f:
         f.write(f"training_time: {training_time}\n")
     
@@ -253,17 +253,17 @@ with open(f"{save_dir}/config.txt", "w") as f:
         f.write(f"{key}: {value}\n")
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"使用设备: {device}")
+print(f"Device: {device}")
 if torch.cuda.is_available():
-    print(f"GPU型号: {torch.cuda.get_device_name(0)}")
-    print(f"当前GPU内存: {torch.cuda.get_device_properties(0).total_memory/1024**2:.1f} MB")
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory/1024**2:.1f} MB")
 
 torch.manual_seed(config["seed"])
 
 url = 'data/' + config["dataset"] + '/'
 x1, x2, y = get_data(url, device)
 
-print("数据形状:")
+print("Data shape:")
 print(f"x1: {x1.shape};")
 print(f"x2: {x2.shape};")
 print(f"y: {y.shape};")
