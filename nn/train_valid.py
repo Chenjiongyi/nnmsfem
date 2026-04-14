@@ -225,27 +225,27 @@ config = {
     "start": timestamp,
     "seed": 42,
     "dataset": "10000",
-    "learning_rate": 5e-4,  # 降低学习率
-    "epochs": 2000,         # 增加训练轮数
-    "batch_size": 16,       # 减小批量大小
-    "patience": 150,        # 增加早停耐心
+    "learning_rate": 5e-4,
+    "epochs": 2000,
+    "batch_size": 16,
+    "patience": 150,
     "scheduler_patience": 30,
     "scheduler_factor": 0.7,
     "min_lr": 1e-8,
     
-    "use_cosine_scheduler": True,  # 使用余弦退火调度器
-    "warmup_epochs": 50,           # 预热轮数
-    "weight_decay": 1e-5,          # 权重衰减
-    "gradient_clipping": 1.0,      # 梯度裁剪
-    "l2_regularization": 1e-6,     # L2正则化
+    "use_cosine_scheduler": True,
+    "warmup_epochs": 50,
+    "weight_decay": 1e-5,
+    "gradient_clipping": 1.0,
+    "l2_regularization": 1e-6,
     
-    "peak_weight": 3.0,            # 峰值损失权重
-    "gradient_weight": 0.5,        # 梯度损失权重  
-    "spectral_weight": 0.3,        # 频谱损失权重
-    "constraint_weight": 10.0,     # 物理约束权重
-    "non_negative_weight": 5.0,    # 非负性和边界约束权重
+    "peak_weight": 3.0,
+    "gradient_weight": 0.5, 
+    "spectral_weight": 0.3,
+    "constraint_weight": 10.0,
+    "non_negative_weight": 5.0,
     
-    "use_data_augmentation": True,  # 启用数据增强
+    "use_data_augmentation": True,
 }
 
 with open(f"{save_dir}/config.txt", "w") as f:

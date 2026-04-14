@@ -4,7 +4,7 @@ This code repository contains two parts: the code for PI-DeepONet training and t
 
 ### Environment configuration
 
-The program requires two environments: a PyTorch environment for training and a C++ environment for running MsFEM. We have uploaded the environments to Docker Hub, where users can search for **chenjoy/pytorch:nnmsfem** and **chenjoy/dealii:nnmsfem** to retrieve them. Alternatively, you can directly run the following code to pull the images:
+The program requires two environments: a PyTorch environment for training and a C++ environment for running MsFEM. We have uploaded the environments to Docker Hub, where users can search for chenjoy/pytorch:nnmsfem and chenjoy/dealii:nnmsfem to retrieve them. Alternatively, you can directly run the following code to pull the images:
 
 ```bash
 docker pull chenjoy/pytorch:nnmsfem

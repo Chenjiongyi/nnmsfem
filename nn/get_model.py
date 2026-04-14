@@ -28,11 +28,11 @@ model.eval()
 torch.onnx.export(
     model,
     args=(x1, X, Y, Z),
-    f="results/model.onnx",       # 导出的ONNX文件名
-    export_params=True,       # 是否导出模型参数
-    opset_version=11,        # ONNX算子集的版本号
-    input_names=['x1', 'X', 'Y', 'Z'],  # 输入张量的名称
-    output_names=['output'],  # 输出张量的名称
+    f="results/model.onnx",
+    export_params=True,
+    opset_version=11,
+    input_names=['x1', 'X', 'Y', 'Z'],
+    output_names=['output'],
 )
 
 print('Model saved as my_model.onnx')
