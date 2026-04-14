@@ -1,53 +1,53 @@
 ## MsFEM-PI-DeepONet
 
-这个代码仓库包含了两部分的内容，nn文件夹下的关于神经网络训练和测试的代码以及experiments文件夹下的关于论文数值实验部分的代码。
+This code repository contains two parts: the code for PI-DeepONet training and testing in the nn folder, and the code for the numerical experiments section of the paper in the experiments folder.
 
-### 环境配置
+### Environment configuration
 
-运行程序所需要两个环境，分别是训练神经网络的pytorch环境和运行多尺度有限元的C++环境。我们已经将环境分别上传到了Docker Hub上，用户可以在上面搜索chenjoy/pytorch:nnmsfem和chenjoy/dealii:nnmsfem进行获取。或者直接运行以下代码拉取镜像：
+The program requires two environments: a PyTorch environment for training and a C++ environment for running MsFEM. We have uploaded the environments to Docker Hub, where users can search for **chenjoy/pytorch:nnmsfem** and **chenjoy/dealii:nnmsfem** to retrieve them. Alternatively, you can directly run the following code to pull the images:
 
 ```bash
 docker pull chenjoy/pytorch:nnmsfem
 docker pull chenjoy/dealii:nnmsfem
 ```
 
-拉去镜像后创建容器，建议用户将pytorch的容器创建到带有GPU的机器上：
+After pulling the image, it is recommended that users create the PyTorch container on a machine with a GPU when creating the container:
 
 ```bash
 docker run -it --name pytorch --gpus all --ipc=host chenjoy/pytorch:nnmsfem /bin/bash
 docker run -it --name dealii chenjoy/dealii:nnmsfem /bin/bash
 ```
 
-### 运行网络训练和测试部分代码
+### Running the network training and testing code
 
-将nn文件夹下的代码下载到创建的pytorch容器中，接着需要去Zenodo上下载数据集和模型，下载这个链接 https://doi.org/10.5281/zenodo.19547217 上的nn.zip就是神经网络需要的所有数据集和模型。将其放在对应的路径上即可运行代码，最终的文件结构如下：
+Download the code in the nn folder into the created PyTorch container. Next, you need to download the dataset and model from Zenodo. Download the nn.zip file from this link: https://doi.org/10.5281/zenodo.19547217. This file contains all the datasets and models needed for the neural network. Simply place it in the corresponding path to run the code. The final file structure is as follows:
 
 ```txt
 nn/
-├── data/ #数据集
-├── results/ #完成训练的模型
+├── data/				# Dataset
+├── results/			# The model that has been trained
 ├── utils/
-├── get_model.py #导出ONNX
-├── test.py #测试模型
-├── train_valid.py #训练模型
+├── get_model.py		# Export ONNX
+├── test.py				# Test model
+├── train_valid.py		# Train model
 ```
 
-### 运行数值实验部分代码
+### Running the numerical experiment code
 
-在把完成训练的模型导出为ONNX模型后，可以将其部署到多尺度有限元方法中。同样去这个链接 https://doi.org/10.5281/zenodo.19547217 上下载所需的网格文件和配置文件。同样将其放在对应的路径上即可运行代码，最终的文件结果如下（以model1的nnmsfem为例）：
+After exporting the trained model as an ONNX model, it can be deployed to the MsFEM. After downloading the code from the experiments folder to the dealii container, download the necessary mesh files and configuration files from this link: https://doi.org/10.5281/zenodo.19547217. Place them in the corresponding paths to run the code. The final file structure is as follows (using nnmsfem for model1 as an example):
 
 ```txt
 experiments/
-├── model1/ #算例1
-    ├── fem/ #FEM-fine
-    ├── msfem/ #MsFEM
-    ├── nnmsfem/ #MsFEM-PI-DeepONet
-    	├── workspace/ #存放网格文件和配置文件
+├── model1/					# Case 1
+    ├── fem/ 				# FEM-fine
+    ├── msfem/ 				# MsFEM
+    ├── nnmsfem/ 			# MsFEM-PI-DeepONet
+    	├── workspace/ 		# Grid file and configuration file
         ├── CMakeLists.txt
         ├── nnmsfem.cc
 ```
 
-同样以model1的nnmsfem为例运行这个程序，具体代码如下：
+Taking nnmsfem from model1 as an example again, first ensure that it is in the nnmsfem folder, and then run the specific code as follows:
 
 ```bash
 cmake .
