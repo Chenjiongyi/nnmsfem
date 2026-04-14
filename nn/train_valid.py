@@ -224,7 +224,7 @@ os.makedirs(save_dir, exist_ok=True)
 config = {
     "start": timestamp,
     "seed": 42,
-    "dataset": "4_3000",
+    "dataset": "10000",
     "learning_rate": 5e-4,  # 降低学习率
     "epochs": 2000,         # 增加训练轮数
     "batch_size": 16,       # 减小批量大小
